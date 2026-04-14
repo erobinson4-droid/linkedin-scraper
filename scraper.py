@@ -9,7 +9,6 @@ from playwright.async_api import async_playwright
 
 # ── Safety limits (matching PhantomBuster's recommended thresholds) ────────────
 DAILY_PROFILE_LIMIT = 100        # warn + stop after this many profiles per session
-DAILY_MINUTE_LIMIT  = 150        # warn after this many minutes in one session (2.5 hrs)
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -127,13 +126,6 @@ async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: i
                 await _emit(f"Cooling down {delay_s:.1f}s before next search …")
                 await asyncio.sleep(delay_s)
 
-            # Session time guard
-            elapsed_min = (time.time() - session_start) / 60
-            if elapsed_min >= DAILY_MINUTE_LIMIT:
-                await _emit(f"WARNING: Session has run {elapsed_min:.0f} min "
-                            f"— stopping to protect your account (limit: {DAILY_MINUTE_LIMIT} min).")
-                break
-
             try:
                 ok = await _ensure_logged_in(page, url, _emit)
                 if not ok:
@@ -187,12 +179,7 @@ async def _scrape_one_url(page, url: str, max_pages: int,
     current_page = 1
     while current_page <= max_pages:
 
-        # ── Daily limit guards ───────────────────────────────────────────────
-        elapsed_min = (time.time() - session_start) / 60
-        if elapsed_min >= DAILY_MINUTE_LIMIT:
-            await emit(f"WARNING: {elapsed_min:.0f} min elapsed — stopping to protect "
-                       f"your account (limit: {DAILY_MINUTE_LIMIT} min).")
-            break
+        # ── Daily limit guard ────────────────────────────────────────────────
         if len(profiles) >= DAILY_PROFILE_LIMIT:
             await emit(f"WARNING: Reached {DAILY_PROFILE_LIMIT} profiles — stopping to "
                        f"protect your account. Resume tomorrow.")
