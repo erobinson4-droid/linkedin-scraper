@@ -332,19 +332,6 @@
   <p>Scrape Sales Navigator search results and export to CSV</p>
 </header>
 
-<!-- AUTH CARD -->
-<div class="card" style="max-width:820px;">
-  <label class="field-label" for="li-at-input">LinkedIn Session Cookie (li_at)</label>
-  <input type="password" id="li-at-input" placeholder="Paste your li_at cookie value here…" autocomplete="off" />
-  <p class="hint">
-    How to get it: open <strong style="color:var(--text)">linkedin.com</strong> in Chrome →
-    press <strong style="color:var(--text)">F12</strong> → Application tab →
-    Cookies → <strong style="color:var(--text)">https://www.linkedin.com</strong> →
-    find <strong style="color:var(--text)">li_at</strong> → copy the Value.
-    This is your login token — keep it private.
-  </p>
-</div>
-
 <!-- INPUT CARD -->
 <div class="card">
 
@@ -542,16 +529,13 @@
     // Build the fetch call
     let fetchOpts;
     let isBatch = currentMode === "batch";
-    const liAt = document.getElementById("li-at-input").value.trim();
-    if (!liAt) { alert("Please paste your li_at cookie first."); doneBtn(); return; }
-
     if (currentMode === "single") {
       const url = document.getElementById("url-input").value.trim();
       if (!url) { alert("Please paste a LinkedIn search URL first."); doneBtn(); return; }
       fetchOpts = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "single", url, max_pages: Number(rangeInput.value), li_at: liAt }),
+        body: JSON.stringify({ mode: "single", url, max_pages: Number(rangeInput.value) }),
       };
 
     } else if (currentBatchSrc === "sheet") {
@@ -567,7 +551,6 @@
           sheet_url: sheetUrl,
           accounts_per_search: accts,
           skip_header: skipHdr,
-          li_at: liAt,
         }),
       };
 
@@ -582,7 +565,6 @@
       fd.append("csv_file",            fileInput.files[0]);
       fd.append("accounts_per_search", accts);
       fd.append("skip_header",         skipHdr ? "true" : "false");
-      fd.append("li_at",               liAt);
       fetchOpts = { method: "POST", body: fd };
     }
 

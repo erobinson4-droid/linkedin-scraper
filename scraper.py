@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import re
-import tempfile
 import time
 from playwright.async_api import async_playwright
+
+BROWSER_DATA_DIR = os.path.join(os.path.dirname(__file__), "browser_data")
 
 # ── Safety limits (matching PhantomBuster's recommended thresholds) ────────────
 DAILY_PROFILE_LIMIT = 2500       # warn + stop after this many profiles per session
@@ -44,8 +46,7 @@ def _make_emit(progress_cb):
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 async def scrape_linkedin_profiles(url: str, max_pages: int,
-                                   progress_cb=None, stop_after: int | None = None,
-                                   li_at: str = ""):
+                                   progress_cb=None, stop_after: int | None = None):
     """
     Scrape a single LinkedIn / Sales Navigator search URL.
 
@@ -61,7 +62,7 @@ async def scrape_linkedin_profiles(url: str, max_pages: int,
     session_start = time.time()
 
     async with async_playwright() as pw:
-        context = await _launch_context(pw, li_at)
+        context = await _launch_context(pw)
         page = context.pages[0] if context.pages else await context.new_page()
 
         ok = await _ensure_logged_in(page, url, emit)
@@ -84,7 +85,7 @@ async def scrape_linkedin_profiles(url: str, max_pages: int,
 
 
 async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: int,
-                                         progress_cb=None, li_at: str = ""):
+                                         progress_cb=None):
     """
     Scrape multiple Sales Navigator search URLs in a single browser session.
 
@@ -110,7 +111,7 @@ async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: i
     session_start = time.time()
 
     async with async_playwright() as pw:
-        context = await _launch_context(pw, li_at)
+        context = await _launch_context(pw)
         page = context.pages[0] if context.pages else await context.new_page()
 
         for i, url in enumerate(urls):
@@ -249,14 +250,13 @@ async def _scrape_one_url(page, url: str, max_pages: int,
 
 # ── Browser helpers ────────────────────────────────────────────────────────────
 
-async def _launch_context(pw, li_at: str = ""):
-    tmp_dir = tempfile.mkdtemp()
+async def _launch_context(pw):
     # Randomise viewport slightly so every session looks different
     width  = random.randint(1260, 1420)
     height = random.randint(860, 960)
-    context = await pw.chromium.launch_persistent_context(
-        tmp_dir,
-        headless=True,
+    return await pw.chromium.launch_persistent_context(
+        BROWSER_DATA_DIR,
+        headless=False,
         viewport={"width": width, "height": height},
         user_agent=_USER_AGENT,
         locale="en-US",
@@ -265,32 +265,32 @@ async def _launch_context(pw, li_at: str = ""):
               "--disable-dev-shm-usage"],
         ignore_default_args=["--enable-automation"],
     )
-    if li_at:
-        await context.add_cookies([{
-            "name": "li_at",
-            "value": li_at,
-            "domain": ".linkedin.com",
-            "path": "/",
-            "secure": True,
-            "httpOnly": True,
-            "sameSite": "None",
-        }])
-    return context
 
 
 async def _ensure_logged_in(page, url: str, emit) -> bool:
     """
-    Navigate to url and verify the li_at cookie authenticated the session.
-    Returns True if we land on the target page, False if still on a login wall.
+    Navigate to url and wait for manual login if needed.
+    Login session is saved in browser_data/ so this is usually only needed once.
     """
     await emit("Opening LinkedIn …")
     await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    await _rand_ms(3_000, 6_000, page)   # human reading time before checking
+    await _rand_ms(3_000, 6_000, page)
 
     if any(x in page.url for x in ("login", "authwall", "checkpoint", "uas/authenticate")):
-        await emit("ERROR: Not logged in — your li_at cookie may be expired or invalid. "
-                   "Please refresh it and try again.")
-        return False
+        await emit("Not logged in — please log in in the browser window that just opened, "
+                   "then come back here.")
+        try:
+            await page.wait_for_url(
+                re.compile(r"(linkedin\.com/feed|linkedin\.com/sales/homepage"
+                           r"|linkedin\.com/sales/search)"),
+                timeout=180_000,
+            )
+        except Exception:
+            await emit("ERROR: Timed out waiting for login.")
+            return False
+        await emit("Logged in! Navigating to search URL …")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await _rand_ms(3_000, 6_000, page)
 
     return True
 

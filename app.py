@@ -111,8 +111,6 @@ def start_scrape():
         mode = "batch"
         accounts_per_search = int(request.form.get("accounts_per_search") or 25)
         skip_header = request.form.get("skip_header", "true").lower() in ("true", "1", "on")
-        li_at = (request.form.get("li_at") or "").strip()
-
         csv_file = request.files.get("csv_file")
         if not csv_file:
             return {"error": "No CSV file provided."}, 400
@@ -143,8 +141,6 @@ def start_scrape():
         # ── JSON request (single URL or Google Sheet batch) ────────────────────
         data = request.get_json(force=True) or {}
         mode = data.get("mode", "single")
-
-        li_at = (data.get("li_at") or "").strip()
 
         if mode == "single":
             url = (data.get("url") or "").strip()
@@ -214,7 +210,7 @@ def start_scrape():
 
             try:
                 profiles = loop.run_until_complete(
-                    scrape_linkedin_profiles(url, max_pages, progress_cb=progress, li_at=li_at)
+                    scrape_linkedin_profiles(url, max_pages, progress_cb=progress)
                 )
                 _jobs[job_id]["profiles"] = profiles
             except Exception as exc:
@@ -241,7 +237,7 @@ def start_scrape():
             try:
                 profiles = loop.run_until_complete(
                     scrape_linkedin_profiles_batch(
-                        urls, accounts_per_search, progress_cb=progress, li_at=li_at
+                        urls, accounts_per_search, progress_cb=progress
                     )
                 )
                 _jobs[job_id]["profiles"] = profiles
