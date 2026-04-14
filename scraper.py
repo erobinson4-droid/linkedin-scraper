@@ -8,7 +8,7 @@ import time
 from playwright.async_api import async_playwright
 
 # ── Safety limits (matching PhantomBuster's recommended thresholds) ────────────
-DAILY_PROFILE_LIMIT = 100        # warn + stop after this many profiles per session
+DAILY_PROFILE_LIMIT = 2500       # warn + stop after this many profiles per session
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
