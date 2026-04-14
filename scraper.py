@@ -1,9 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import tempfile
+import time
 from playwright.async_api import async_playwright
+
+# ── Safety limits (matching PhantomBuster's recommended thresholds) ────────────
+DAILY_PROFILE_LIMIT = 100        # warn + stop after this many profiles per session
+DAILY_MINUTE_LIMIT  = 150        # warn after this many minutes in one session (2.5 hrs)
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+async def _rand_ms(lo: int, hi: int, page=None):
+    """Sleep for a random number of milliseconds between lo and hi."""
+    ms = random.randint(lo, hi)
+    if page:
+        await page.wait_for_timeout(ms)
+    else:
+        await asyncio.sleep(ms / 1000)
 
 
 def _is_sales_nav(url: str) -> bool:
@@ -38,6 +59,7 @@ async def scrape_linkedin_profiles(url: str, max_pages: int,
     await emit(f"Mode: {'Sales Navigator' if sales_nav else 'LinkedIn Search'}")
 
     profiles = []
+    session_start = time.time()
 
     async with async_playwright() as pw:
         context = await _launch_context(pw, li_at)
@@ -48,13 +70,15 @@ async def scrape_linkedin_profiles(url: str, max_pages: int,
             await context.close()
             return profiles
 
-        profiles = await _scrape_one_url(page, url, max_pages, stop_after, emit)
+        profiles = await _scrape_one_url(page, url, max_pages, stop_after, emit,
+                                         session_start=session_start)
 
         # Tag every profile with its source URL
         for p in profiles:
             p.setdefault("search_url", url)
 
-        await emit(f"Done. {len(profiles)} unique profile(s) collected.")
+        elapsed = (time.time() - session_start) / 60
+        await emit(f"Done. {len(profiles)} profile(s) collected in {elapsed:.1f} min.")
         await context.close()
 
     return profiles
@@ -84,6 +108,8 @@ async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: i
     if total > 20:
         await emit(f"WARNING: {total} URLs — this batch may take a long time.")
 
+    session_start = time.time()
+
     async with async_playwright() as pw:
         context = await _launch_context(pw, li_at)
         page = context.pages[0] if context.pages else await context.new_page()
@@ -95,6 +121,19 @@ async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: i
             async def _emit(msg, _p=prefix):
                 await emit(f"{_p} {msg}")
 
+            # Between-search cooldown (skip before the first one)
+            if i > 0:
+                delay_s = random.uniform(4, 9)
+                await _emit(f"Cooling down {delay_s:.1f}s before next search …")
+                await asyncio.sleep(delay_s)
+
+            # Session time guard
+            elapsed_min = (time.time() - session_start) / 60
+            if elapsed_min >= DAILY_MINUTE_LIMIT:
+                await _emit(f"WARNING: Session has run {elapsed_min:.0f} min "
+                            f"— stopping to protect your account (limit: {DAILY_MINUTE_LIMIT} min).")
+                break
+
             try:
                 ok = await _ensure_logged_in(page, url, _emit)
                 if not ok:
@@ -103,7 +142,8 @@ async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: i
 
                 profiles = await _scrape_one_url(page, url, max_pages,
                                                  stop_after=accounts_per_search,
-                                                 emit=_emit)
+                                                 emit=_emit,
+                                                 session_start=session_start)
 
                 # Trim to exactly accounts_per_search
                 profiles = profiles[:accounts_per_search]
@@ -132,7 +172,8 @@ async def scrape_linkedin_profiles_batch(urls: list[str], accounts_per_search: i
 # ── Core scraping loop ─────────────────────────────────────────────────────────
 
 async def _scrape_one_url(page, url: str, max_pages: int,
-                          stop_after: int | None, emit) -> list[dict]:
+                          stop_after: int | None, emit,
+                          session_start: float | None = None) -> list[dict]:
     """
     Inner pagination loop — no browser management, no login handling.
     Returns a list of profile dicts (without search_url — callers add that).
@@ -140,9 +181,23 @@ async def _scrape_one_url(page, url: str, max_pages: int,
     profiles: list[dict] = []
     seen_urls: set[str] = set()
     sales_nav = _is_sales_nav(url)
+    if session_start is None:
+        session_start = time.time()
 
     current_page = 1
     while current_page <= max_pages:
+
+        # ── Daily limit guards ───────────────────────────────────────────────
+        elapsed_min = (time.time() - session_start) / 60
+        if elapsed_min >= DAILY_MINUTE_LIMIT:
+            await emit(f"WARNING: {elapsed_min:.0f} min elapsed — stopping to protect "
+                       f"your account (limit: {DAILY_MINUTE_LIMIT} min).")
+            break
+        if len(profiles) >= DAILY_PROFILE_LIMIT:
+            await emit(f"WARNING: Reached {DAILY_PROFILE_LIMIT} profiles — stopping to "
+                       f"protect your account. Resume tomorrow.")
+            break
+
         await emit(f"Scraping page {current_page} …")
         await _scroll_to_load(page)
 
@@ -179,6 +234,7 @@ async def _scrape_one_url(page, url: str, max_pages: int,
             aria_disabled = await next_btn.get_attribute("aria-disabled")
             if is_disabled is None and aria_disabled != "true":
                 await next_btn.scroll_into_view_if_needed()
+                await _rand_ms(800, 2_200, page)   # pause before clicking
                 await next_btn.click()
                 went_next = True
                 await emit(f"  Navigating to page {current_page + 1} …")
@@ -208,10 +264,16 @@ async def _scrape_one_url(page, url: str, max_pages: int,
 
 async def _launch_context(pw, li_at: str = ""):
     tmp_dir = tempfile.mkdtemp()
+    # Randomise viewport slightly so every session looks different
+    width  = random.randint(1260, 1420)
+    height = random.randint(860, 960)
     context = await pw.chromium.launch_persistent_context(
         tmp_dir,
         headless=True,
-        viewport={"width": 1280, "height": 900},
+        viewport={"width": width, "height": height},
+        user_agent=_USER_AGENT,
+        locale="en-US",
+        timezone_id="America/New_York",
         args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
               "--disable-dev-shm-usage"],
         ignore_default_args=["--enable-automation"],
@@ -236,7 +298,7 @@ async def _ensure_logged_in(page, url: str, emit) -> bool:
     """
     await emit("Opening LinkedIn …")
     await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    await page.wait_for_timeout(4_000)
+    await _rand_ms(3_000, 6_000, page)   # human reading time before checking
 
     if any(x in page.url for x in ("login", "authwall", "checkpoint", "uas/authenticate")):
         await emit("ERROR: Not logged in — your li_at cookie may be expired or invalid. "
@@ -494,7 +556,7 @@ async def _force_render_all_cards(page):
     for item in items:
         try:
             await item.scroll_into_view_if_needed()
-            await page.wait_for_timeout(120)
+            await _rand_ms(80, 260, page)
         except Exception:
             pass
     try:
@@ -502,24 +564,28 @@ async def _force_render_all_cards(page):
     except Exception:
         pass
     await page.evaluate("window.scrollTo(0, 0)")
-    await page.wait_for_timeout(300)
+    await _rand_ms(300, 700, page)
 
 
 async def _scroll_to_load(page):
-    """Scroll top-to-bottom in steps, waiting for network idle each time."""
+    """Scroll top-to-bottom in small random steps to mimic human reading."""
     total_height = await page.evaluate("document.body.scrollHeight")
-    step = 400
     position = 0
     while position < total_height:
+        step = random.randint(120, 320)   # humans scroll in uneven bursts
         position = min(position + step, total_height)
         await page.evaluate(f"window.scrollTo(0, {position})")
+        await _rand_ms(120, 500, page)
+        # Occasionally pause longer as if reading something
+        if random.random() < 0.12:
+            await _rand_ms(800, 2_000, page)
         try:
             await page.wait_for_load_state("networkidle", timeout=3_000)
         except Exception:
             pass
         total_height = await page.evaluate("document.body.scrollHeight")
     await page.evaluate("window.scrollTo(0, 0)")
-    await page.wait_for_timeout(300)
+    await _rand_ms(400, 900, page)
 
 
 async def _find_next_button(page):
@@ -553,7 +619,7 @@ async def _wait_for_new_results(page, sales_nav: bool):
         await page.wait_for_selector(card_sel, timeout=15_000)
     except Exception:
         pass
-    await page.wait_for_timeout(800)
+    await _rand_ms(1_000, 3_000, page)   # human "reading" pause after page load
 
 
 # ── VMID helpers ───────────────────────────────────────────────────────────────
