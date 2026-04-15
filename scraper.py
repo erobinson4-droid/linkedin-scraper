@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 BROWSER_DATA_DIR = os.path.join(os.path.dirname(__file__), "browser_data")
 
 # ── Safety limits (matching PhantomBuster's recommended thresholds) ────────────
-DAILY_PROFILE_LIMIT = 2500       # warn + stop after this many profiles per session
+DAILY_PROFILE_LIMIT = 10_000     # warn + stop after this many profiles per session
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
