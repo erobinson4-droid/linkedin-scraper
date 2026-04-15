@@ -26,6 +26,21 @@ cd "$SCRIPT_DIR"
 bash run.sh
 EOF
 chmod +x "$SHORTCUT"
+
+# Apply custom icon if icon.png exists in the project directory
+ICON_PATH="$SCRIPT_DIR/icon.png"
+if [ -f "$ICON_PATH" ]; then
+    python3 << PYEOF
+import AppKit
+img = AppKit.NSImage.alloc().initWithContentsOfFile_("$ICON_PATH")
+if img:
+    AppKit.NSWorkspace.sharedWorkspace().setIcon_forFile_options_(img, "$SHORTCUT", 0)
+    print("✓ Custom icon applied to shortcut.")
+else:
+    print("⚠ Could not load icon — shortcut created without custom icon.")
+PYEOF
+fi
+
 echo "✓ Desktop shortcut created — double-click 'LinkedIn Scraper' on your Desktop to launch."
 
 echo ""
